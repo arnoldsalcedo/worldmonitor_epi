@@ -181,3 +181,72 @@ See our [Security Policy](./SECURITY.md) for responsible disclosure guidelines.
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=koala73/worldmonitor&type=Date&type=Date" />
  </picture>
 </a>
+
+## Diagram consult architecture
+
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 User
+    participant Browser as 🌐 Browser / SPA
+    participant SW as 📦 Service Worker
+    participant IDB as 💾 IndexedDB
+    participant EdgeFunc as ⚡ Vercel Edge
+    participant Redis as 🔴 Redis (Upstash)
+    participant Relay as 🔗 Railway Relay
+    participant RSS as 📰 RSS Feeds (337)
+    participant ML as 🧠 ML Worker
+    participant Panel as 🎨 Panels UI
+
+    User->>Browser: 1. Opens worldmonitor.app
+    Browser->>Browser: 2. main.ts initializes<br/>(Sentry, Analytics)
+    Browser->>Browser: 3. App.init() - 8 phases:<br/>- Storage + i18n<br/>- ML Worker setup<br/>- Sidecar (desktop)
+    Browser->>EdgeFunc: 4. fetch(/api/bootstrap)<br/>(2 tiers: fast 3s + slow 5s)
+    EdgeFunc->>Redis: 5. getCachedJson(keys[])
+    
+    alt Cache HIT in Redis
+        Redis-->>EdgeFunc: Cached response
+    else Cache MISS
+        EdgeFunc->>EdgeFunc: ETag generation
+        Redis-->>EdgeFunc: miss
+    end
+    
+    EdgeFunc-->>Browser: 6. Bootstrap data<br/>(markets, news digest, signals)
+    Browser->>IDB: 7. Save baselines<br/>in IndexedDB
+    Browser->>Browser: 8. PanelLayoutManager<br/>renders UI base
+    Browser->>Browser: 9. startSmartPollLoop()<br/>(smart polling)
+    
+    loop Every X seconds (viewport-conditional)
+        Browser->>EdgeFunc: 10. fetch(/api/news/v1/list)<br/>(news category)
+        EdgeFunc->>Redis: 11. getCachedJson(news:politics)
+        
+        alt Redis hit (TTL valid)
+            Redis-->>EdgeFunc: cached items
+        else Redis miss
+            EdgeFunc->>EdgeFunc: Try direct fetch first
+            EdgeFunc->>Relay: 12. GET /rss?url=<feedUrl>
+            Relay->>RSS: 13. GET feed.xml
+            
+            alt Feed accessible
+                RSS-->>Relay: XML/Atom feed
+                Relay-->>EdgeFunc: Parsed RSS items
+                EdgeFunc->>Redis: 14. setCachedJson()
+                EdgeFunc->>Redis: 15. Save seed-meta
+            else Feed error/timeout
+                EdgeFunc->>EdgeFunc: CircuitBreaker<br/>open->cooldown
+                EdgeFunc->>Redis: Use previous cache
+            end
+        end
+        
+        EdgeFunc-->>Browser: 16. NewsItem[]
+    end
+    
+    Browser->>Browser: 17. clustering.ts<br/>- Jaccard similarity
+    Browser->>ML: 18. clusterNewsHybrid()
+    ML->>Browser: 19. Embeddings[][]<br/>(MiniLM-L6-v2)
+    Browser->>Browser: 20. threat-classifier.ts
+    Browser->>Browser: 21. entity-extraction.ts
+    Browser->>Browser: 22. SignalAggregator
+    Browser->>Panel: 23. Panel.setContent(html)
+    Panel->>User: 24. ✅ Display on UI
+    Browser->>IDB: 25. Save snapshot
